@@ -50,7 +50,20 @@ canvas{display:block;width:100%;height:170px}
 #countin{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
   font-size:4rem;font-weight:800;color:var(--ember);pointer-events:none;opacity:0;transition:opacity .15s}
 #countin.show{opacity:1}
-.transport{display:flex;gap:14px;align-items:center;margin:16px 0}
+.transport{display:flex;gap:10px;align-items:center;margin:12px 0 4px;flex-wrap:wrap}
+.tbtn{height:56px;min-width:56px;padding:0 16px;border-radius:28px;border:2px solid var(--ink);background:transparent;color:var(--ink);font:inherit;font-weight:700;font-size:1.05rem;cursor:pointer;display:inline-flex;align-items:center;justify-content:center}
+.tbtn:disabled{opacity:.35;cursor:default}
+#pause[data-paused="true"]{background:var(--ink);color:var(--bg)}
+@media (max-width:520px){ #player:not(.fs) .bpm{flex-basis:100%;order:5} #player:not(.fs) #fs{margin-left:auto} }
+#player.fs{position:fixed;inset:0;z-index:50;background:#16191C;display:flex;flex-direction:column;gap:8px;
+  padding:max(8px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) max(8px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left))}
+#player.fs .stage{flex:1;min-height:0;border-radius:12px}
+#player.fs .stage canvas{position:absolute;inset:0;height:100%}
+#player.fs .transport{margin:0;flex-wrap:nowrap;color:#EAF0EA}
+#player.fs .tbtn{border-color:#EAF0EA;color:#EAF0EA;height:48px}
+#player.fs #pause[data-paused="true"]{background:#EAF0EA;color:#16191C}
+#player.fs #play{height:48px}
+#player.fs .bpm output{color:#C9D2C7}
 #play{flex:0 0 auto;min-width:112px;height:56px;border:0;border-radius:28px;background:var(--ember);color:#1D2A24;
   font:inherit;font-weight:800;font-size:1.15rem;cursor:pointer}
 #play[aria-pressed="true"]{background:var(--wood);color:#fff}
@@ -115,20 +128,23 @@ canvas{height:190px}
   </div>
   <p class="songinfo" id="songinfo"></p>
 
-  <div class="stage">
-    <canvas id="lane" aria-label="Spielansicht mit Akkordblöcken, springendem Ball und Fortschrittsleiste"></canvas>
+  <div id="player">
+    <div class="stage">
+      <canvas id="lane" aria-label="Spielansicht mit Akkordblöcken, springendem Ball und Fortschrittsleiste"></canvas>
+    </div>
+    <div class="transport">
+      <button id="play" aria-pressed="false">Start</button>
+      <button id="pause" class="tbtn" disabled>Pause</button>
+      <div class="bpm">
+        <label for="bpm">Tempo</label>
+        <output id="bpmOut" for="bpm">70 BPM</output>
+        <input id="bpm" type="range" min="40" max="130" step="2" value="70">
+      </div>
+      <button id="fs" class="tbtn" aria-label="Vollbild ein/aus"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
+    </div>
   </div>
   <div class="under"><span id="ptext"></span><span>Leiste antippen: ab dort</span></div>
   <div class="strip" id="strip" role="group" aria-label="Abschnitt wählen, ab dem gestartet wird"></div>
-
-  <div class="transport">
-    <button id="play" aria-pressed="false">Start</button>
-    <div class="bpm">
-      <label for="bpm">Tempo</label>
-      <output id="bpmOut" for="bpm">70 BPM</output>
-      <input id="bpm" type="range" min="40" max="130" step="2" value="70">
-    </div>
-  </div>
 
   <section class="settings">
     <div class="row" id="altRow">
@@ -204,6 +220,7 @@ function chordTemplate(name){
   });
   return normV(v.map(Math.sqrt));
 }
+function chordTemplate0(name){ const c=calib[name]; delete calib[name]; const t=chordTemplate(name); if(c) calib[name]=c; return t; }
 function chromaFromDb(db, sampleRate, fftSize){
   const binHz = sampleRate/fftSize, v = new Array(12).fill(0);
   for(let k=Math.floor(CH_LO/binHz); k<=Math.ceil(CH_HI/binHz) && k<db.length; k++){
@@ -370,24 +387,41 @@ function scheduler(){
 function resetScore(){ hits.clear(); missed.clear(); recent.length=0; score=0; streak=0; }
 let steps=[], stepIdx=0, waitPos=0, flash=null, okCount=0, lockUntil=0;
 function buildSteps(){ steps=[]; slots.forEach((sl,i)=>{ if(i===0 || slots[i-1].c!==sl.c) steps.push(i); }); }
-function start(){
+let paused=false, origStart=0;
+function start(keep){
   initAudio(); ac.resume();
+  if(!keep) origStart = startSlot;
   if(state.wait){
     buildSteps(); stepIdx = Math.max(0, steps.findIndex(s=>s>=startSlot)); if(stepIdx<0) stepIdx=0;
-    playFrom = steps[stepIdx]; waitPos = playFrom; okCount=0; lockUntil=0; playing=true; resetScore();
-    $('play').textContent='Stopp'; $('play').setAttribute('aria-pressed','true');
+    playFrom = steps[stepIdx]; waitPos = playFrom; okCount=0; lockUntil=0; playing=true; if(!keep) resetScore();
+    paused=false; updateTransport();
     if(!listening) listenMsg('<strong>Warte-Modus:</strong> Starte „Zuhören“, dann geht es nach jedem richtigen Akkord weiter. Ohne Mikrofon: Spur antippen = weiter.');
     return;
   }
   playFrom = startSlot;
-  playing=true; nextSlot=playFrom-8; resetScore();
+  playing=true; nextSlot=playFrom-8; if(!keep) resetScore();
   startTime = ac.currentTime + 0.12 + 8*slotDur() - playFrom*slotDur();
   timer = setInterval(scheduler, 25);
-  $('play').textContent='Stopp'; $('play').setAttribute('aria-pressed','true');
+  paused=false; updateTransport();
 }
 function stop(){
-  playing=false; clearInterval(timer);
-  $('play').textContent='Start'; $('play').setAttribute('aria-pressed','false');
+  playing=false; paused=false; clearInterval(timer); updateTransport();
+}
+function pause(){
+  if(!playing) return;
+  if(state.wait){ startSlot = steps[stepIdx] ?? startSlot; }
+  else { let s = Math.max(0, Math.floor((ac.currentTime - startTime)/slotDur()));
+    if(s < playFrom) s = playFrom;
+    if(s >= slots.length) s = looping() ? s % slots.length : slots.length-1;
+    startSlot = s - slots[s].inBar; } // Weiter ab Taktanfang, mit Einzählen
+  playing=false; clearInterval(timer); paused=true; updateTransport();
+}
+function resume(){ start(true); }
+function fullStop(){ stop(); startSlot = origStart; }
+function updateTransport(){
+  const active = playing || paused;
+  $('play').textContent = active ? 'Stopp' : 'Start'; $('play').setAttribute('aria-pressed', String(active));
+  $('pause').disabled = !active; $('pause').textContent = paused ? 'Weiter' : 'Pause'; $('pause').dataset.paused = String(paused);
 }
 function rebaseTempo(oldSd){
   if(!playing) return;
@@ -568,7 +602,9 @@ function draw(){
     cx.fillStyle='rgba(20,24,27,.9)'; cx.fillRect(0,0,W,H);
     cx.fillStyle='#FFFFFF'; cx.textAlign='center'; cx.textBaseline='middle';
     cx.font='600 16px '+FONT; cx.fillText('Kalibrierung '+(calibIdx+1)+' von '+calibList.length+': greif und schlag einmal an', W/2, H*0.3);
-    cx.font='800 64px '+FONT; cx.fillStyle=col(calibList[calibIdx]); cx.fillText(calibList[calibIdx], W/2, H*0.55); cx.textAlign='left';
+    cx.font='800 64px '+FONT; cx.fillStyle=col(calibList[calibIdx]); cx.fillText(calibList[calibIdx], W/2, H*0.55);
+    if(flash && performance.now()-flash.t < 900){ cx.font='700 16px '+FONT; cx.fillStyle='#5CCB86'; cx.fillText(flash.txt, W/2, H*0.78); }
+    cx.textAlign='left';
   }
   // Fortschrittsleiste mit Akkordfarben
   const bx=12, bw=W-24, n=slots.length;
@@ -614,7 +650,7 @@ function markStrip(){ $('strip').querySelectorAll('button').forEach(b=> b.setAtt
 // ---------- Zuhören (Beta) ----------
 const hits = new Map(), missed = new Set(), recent = [];
 let score=0, streak=0, listenSince=Infinity;
-let freqAn=null, fbuf=null;
+let freqAn=null, fbuf=null, env=0;
 let listening=false, micStream=null, analyser=null, listenTimer=null, buf=null, noiseFloor=0.004, prevRms=0, lastOnset=0;
 function listenMsg(html){ $('listenMsg').innerHTML = html; }
 function updateListenMsg(){
@@ -652,8 +688,12 @@ function listenTick(){
   let sum=0; for(let i=0;i<buf.length;i++) sum+=buf[i]*buf[i];
   const rms = Math.sqrt(sum/buf.length), now = ac.currentTime;
   $('meterBar').style.width = Math.min(100, rms*900)+'%';
-  if(rms > Math.max(0.012, noiseFloor*4) && rms > prevRms*1.35 && now-lastOnset > (state.wait && playing ? 0.25 : 0.09)){
-    lastOnset = now;
+  const minGap = calibrating ? 0.9 : (state.wait && playing ? 0.35 : 0.09);
+  const strictOn = calibrating || (state.wait && playing);
+  const isOnset = rms > Math.max(0.012, noiseFloor*4) && rms > env*(strictOn?1.45:1.3) && rms > prevRms*1.15 && now-lastOnset > minGap;
+  env = Math.max(rms, env*(strictOn?0.975:0.95)); // abklingende Hüllkurve: Nachklingen löst keinen neuen Anschlag aus
+  if(isOnset){
+    lastOnset = now; env = rms;
     const lag = analyser.fftSize/ac.sampleRate/2 + (ac.baseLatency||0) + (ac.outputLatency||0) + state.lat/1000;
     if(calibrating) setTimeout(captureCalib, 200);
     else if(playing && state.wait) setTimeout(waitCheck, 200);
@@ -681,12 +721,18 @@ function onOnset(t){
 // ---------- Akkord-Urteil, Warte-Modus, Kalibrierung ----------
 function songChords(){ const set=new Set(slots.map(s=>s.c)); [...set].forEach(c=>(ACCEPT[c]||[]).forEach(v=>set.add(v))); return [...set].filter(c=>SHAPES[c]); }
 function currentChroma(){ freqAn.getFloatFrequencyData(fbuf); return chromaFromDb(fbuf, ac.sampleRate, freqAn.fftSize); }
-function judge(expected){
+function judge(expected, strict){
   if(!freqAn) return null;
   const ranked = classify(currentChroma(), songChords());
   const okSet = [expected, ...(ACCEPT[expected]||[])];
   if(ranked[0].sim < 0.3) return null; // zu leise/unklar: weder Treffer noch Fehler
   const best = ranked[0], expSim = Math.max(...ranked.filter(r=>okSet.includes(r.c)).map(r=>r.sim));
+  if(strict){
+    const otherBest = (ranked.find(r=>!okSet.includes(r.c))||{sim:0}).sim;
+    const top = okSet.includes(best.c);
+    if(top && expSim >= 0.7 && expSim - otherBest >= 0.03) return {ok:true, det:best.c, sim:best.sim};
+    return top ? {ok:false, unclear:true, det:best.c, sim:best.sim} : {ok:false, det:best.c, sim:best.sim};
+  }
   // Großzügig: nur "falsch", wenn ein anderer Akkord klar besser passt
   const ok = okSet.includes(best.c) || best.sim - expSim < 0.04;
   if(ok && expSim < 0.7) return {ok:false, unclear:true, det:best.c, sim:best.sim};
@@ -700,7 +746,7 @@ function advanceStep(){
 }
 function waitCheck(){
   if(!playing || !state.wait || performance.now() < lockUntil) return;
-  const exp = slotAt(steps[stepIdx]).c, r = judge(exp);
+  const exp = slotAt(steps[stepIdx]).c, r = judge(exp, true);
   if(!r) return;
   if(r.ok){ streak++; score += 10*(1+Math.min(3,Math.floor(streak/8))); okCount++;
     const need = state.need||1;
@@ -719,19 +765,47 @@ function startCalib(){
 function captureCalib(){
   if(!calibrating) return;
   calib[calibList[calibIdx]] = currentChroma();
+  flash={t:performance.now(), ok:true, txt:'✓ '+calibList[calibIdx]+' erfasst'};
   calibIdx++;
   if(calibIdx >= calibList.length) endCalib(true);
 }
 function endCalib(done){
   calibrating=false; $('calib').textContent='Kalibrieren'; $('calib').setAttribute('aria-pressed','false');
-  if(done){ try{ localStorage.setItem('uke-calib-v1', JSON.stringify(calib)); }catch(e){} }
+  if(done){
+    if(!calibValid()){ calib={}; try{ localStorage.removeItem('uke-calib-v1'); }catch(e){}
+      listenMsg('<strong>Kalibrierung verworfen:</strong> Mehrere Akkorde klangen gleich. Bitte nochmal, jeden Akkord einzeln und erst nach der Anzeige anschlagen.'); }
+    else { try{ localStorage.setItem('uke-calib-v1', JSON.stringify(calib)); }catch(e){} listenMsg('<strong>Kalibrierung gespeichert.</strong>'); }
+  }
   showCalibInfo();
+}
+function calibValid(){
+  const k = Object.keys(calib);
+  for(let i=0;i<k.length;i++) for(let j=i+1;j<k.length;j++){
+    const a=calib[k[i]], b=calib[k[j]]; if(!a||!b||a.length!==12||b.length!==12) return false;
+    if(dot(a,b) > 0.97 && dot(chordTemplate0(k[i]), chordTemplate0(k[j])) < 0.95) return false; }
+  return true;
 }
 function showCalibInfo(){
   const n = Object.keys(calib).length;
   $('calibInfo').innerHTML = n ? `${n} Akkorde auf deine Ukulele kalibriert · <a href="#" id="calibReset">zurücksetzen</a>` : 'Optional: macht die Akkorderkennung genauer';
   const a=$('calibReset'); if(a) a.onclick = e=>{ e.preventDefault(); calib={}; try{ localStorage.removeItem('uke-calib-v1'); }catch(_){} showCalibInfo(); };
 }
+
+// ---------- Vollbild ----------
+function setFS(on){
+  $('player').classList.toggle('fs', on); document.body.style.overflow = on ? 'hidden' : '';
+  $('fs').innerHTML = on ? '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg>' : '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>';
+  setTimeout(resize, 150);
+}
+async function toggleFS(){
+  const on = !$('player').classList.contains('fs');
+  setFS(on);
+  try{
+    if(on && document.documentElement.requestFullscreen){ await document.documentElement.requestFullscreen({navigationUI:'hide'}); try{ await screen.orientation.lock('landscape'); }catch(e){} }
+    else if(!on && document.fullscreenElement){ try{ screen.orientation.unlock(); }catch(e){} await document.exitFullscreen(); }
+  }catch(e){}
+}
+document.addEventListener('fullscreenchange', ()=>{ if(!document.fullscreenElement && $('player').classList.contains('fs')) setFS(false); setTimeout(resize, 150); });
 
 // ---------- Bedienung ----------
 function fillSelect(el, items, val){ el.innerHTML = items.map(i=>`<option value="${i.id}">${i.name}</option>`).join(''); el.value = val; }
@@ -763,7 +837,9 @@ function syncUI(){
 }
 fillSelect($('song'), SONGS, state.song);
 fillSelect($('pat'), PATTERNS.map(p=>({id:p.id,name:p.name})), state.pat);
-$('play').addEventListener('click', ()=> playing ? stop() : start());
+$('play').addEventListener('click', ()=> (playing||paused) ? fullStop() : start());
+$('pause').addEventListener('click', ()=> paused ? resume() : pause());
+$('fs').addEventListener('click', toggleFS);
 $('listen').addEventListener('click', ()=> listening ? stopListen() : startListen());
 $('bpm').addEventListener('input', e=>{ const old=slotDur(); state.bpm=+e.target.value; rebaseTempo(old); syncUI(); save(); });
 $('lat').addEventListener('input', e=>{ state.lat=+e.target.value; syncUI(); save(); });
@@ -778,10 +854,11 @@ $('chk').addEventListener('change', e=>{ state.chk=e.target.checked; save(); });
 $('calib').addEventListener('click', ()=> calibrating ? endCalib(false) : startCalib());
 document.querySelectorAll('[data-alt]').forEach(b=> b.addEventListener('click', ()=>{ state.alt = b.dataset.alt==='1'; save(); if(playing) stop(); buildTimeline(); syncUI(); }));
 document.querySelectorAll('[data-mode]').forEach(b=> b.addEventListener('click', ()=>{ state.mode=b.dataset.mode; syncUI(); save(); }));
-document.addEventListener('keydown', e=>{ if(e.code==='Space' && !['SELECT','INPUT','BUTTON'].includes(e.target.tagName)){ e.preventDefault(); playing?stop():start(); }});
+document.addEventListener('keydown', e=>{ if(e.code==='Space' && !['SELECT','INPUT','BUTTON'].includes(e.target.tagName)){ e.preventDefault(); playing ? pause() : (paused ? resume() : start()); }});
 
 if(!SONGS.find(s=>s.id===state.song)) state.song='xmas';
-loadSong(); showCalibInfo(); resize(); requestAnimationFrame(draw);
+if(!calibValid()){ calib={}; try{ localStorage.removeItem('uke-calib-v1'); }catch(e){} }
+loadSong(); showCalibInfo(); updateTransport(); resize(); requestAnimationFrame(draw);
 </script>
 </body>
 </html>
