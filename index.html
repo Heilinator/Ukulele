@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Lagerfeuer-Trainer</title>
+<meta name="robots" content="noindex, nofollow">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&display=swap" rel="stylesheet">
@@ -152,6 +153,7 @@ canvas{height:190px}
       <label><input type="checkbox" id="strum"> Begleitung hören</label>
       <label><input type="checkbox" id="loop"> Wiederholen</label>
       <label><input type="checkbox" id="wait"> Warte-Modus</label>
+      <label>Anschläge je Akkord <select id="need"><option value="1">1</option><option value="2">2</option><option value="4">4</option></select></label>
       <label><input type="checkbox" id="chk"> Akkorde prüfen</label>
     </div>
   </section>
@@ -270,7 +272,7 @@ const PATTERNS = [
   {id:'easy',  name:'Einsteiger', text:'D  D U  D  D U', p:['D','','D','U','D','','D','U']}
 ];
 
-const state = {song:'xmas', pat:'lager', bpm:70, click:true, strum:false, lat:0, mode:'learn', loop:false, alt:false, wait:false, chk:true};
+const state = {song:'xmas', pat:'lager', bpm:70, click:true, strum:false, lat:0, mode:'learn', loop:false, alt:false, wait:false, chk:true, need:1};
 try{ Object.assign(state, JSON.parse(localStorage.getItem('uke-trainer-v3')||'{}')); }catch(e){}
 function save(){ try{ localStorage.setItem('uke-trainer-v3', JSON.stringify(state)); }catch(e){} }
 let startSlot = 0;
@@ -366,13 +368,13 @@ function scheduler(){
   while(startTime + nextSlot*sd < ac.currentTime + 0.12){ scheduleSlot(nextSlot, startTime + nextSlot*sd); nextSlot++; }
 }
 function resetScore(){ hits.clear(); missed.clear(); recent.length=0; score=0; streak=0; }
-let steps=[], stepIdx=0, waitPos=0, flash=null;
+let steps=[], stepIdx=0, waitPos=0, flash=null, okCount=0, lockUntil=0;
 function buildSteps(){ steps=[]; slots.forEach((sl,i)=>{ if(i===0 || slots[i-1].c!==sl.c) steps.push(i); }); }
 function start(){
   initAudio(); ac.resume();
   if(state.wait){
     buildSteps(); stepIdx = Math.max(0, steps.findIndex(s=>s>=startSlot)); if(stepIdx<0) stepIdx=0;
-    playFrom = steps[stepIdx]; waitPos = playFrom; playing=true; resetScore();
+    playFrom = steps[stepIdx]; waitPos = playFrom; okCount=0; lockUntil=0; playing=true; resetScore();
     $('play').textContent='Stopp'; $('play').setAttribute('aria-pressed','true');
     if(!listening) listenMsg('<strong>Warte-Modus:</strong> Starte „Zuhören“, dann geht es nach jedem richtigen Akkord weiter. Ohne Mikrofon: Spur antippen = weiter.');
     return;
@@ -650,7 +652,7 @@ function listenTick(){
   let sum=0; for(let i=0;i<buf.length;i++) sum+=buf[i]*buf[i];
   const rms = Math.sqrt(sum/buf.length), now = ac.currentTime;
   $('meterBar').style.width = Math.min(100, rms*900)+'%';
-  if(rms > Math.max(0.012, noiseFloor*4) && rms > prevRms*1.35 && now-lastOnset > 0.09){
+  if(rms > Math.max(0.012, noiseFloor*4) && rms > prevRms*1.35 && now-lastOnset > (state.wait && playing ? 0.25 : 0.09)){
     lastOnset = now;
     const lag = analyser.fftSize/ac.sampleRate/2 + (ac.baseLatency||0) + (ac.outputLatency||0) + state.lat/1000;
     if(calibrating) setTimeout(captureCalib, 200);
@@ -691,15 +693,19 @@ function judge(expected){
   return {ok, det:best.c, sim:best.sim};
 }
 function advanceStep(){
+  okCount=0; lockUntil = performance.now() + 600; // nachklingenden Akkord ignorieren
   if(stepIdx < steps.length-1) stepIdx++;
   else if(looping()){ stepIdx=0; waitPos=0; }
   else { stop(); listenMsg('<strong>Geschafft!</strong> Song einmal komplett durchgegriffen. '+score+' Punkte.'); return; }
 }
 function waitCheck(){
-  if(!playing || !state.wait) return;
+  if(!playing || !state.wait || performance.now() < lockUntil) return;
   const exp = slotAt(steps[stepIdx]).c, r = judge(exp);
   if(!r) return;
-  if(r.ok){ streak++; score += 10*(1+Math.min(3,Math.floor(streak/8))); flash={t:performance.now(), ok:true, txt:'✓ '+exp}; advanceStep(); }
+  if(r.ok){ streak++; score += 10*(1+Math.min(3,Math.floor(streak/8))); okCount++;
+    const need = state.need||1;
+    flash={t:performance.now(), ok:true, txt:'✓ '+exp+(need>1?' ('+okCount+'/'+need+')':'')};
+    if(okCount>=need) advanceStep(); }
   else if(r.unclear){ flash={t:performance.now(), ok:false, txt:'Nicht klar erkannt – nochmal'}; }
   else { streak=0; flash={t:performance.now(), ok:false, txt:'Erkannt: '+r.det+' – gesucht: '+exp}; }
 }
@@ -742,7 +748,7 @@ function syncUI(){
   $('altOrig').setAttribute('aria-pressed', String(!state.alt)); $('altEasy').setAttribute('aria-pressed', String(!!state.alt));
   $('bpm').value = state.bpm; $('bpmOut').textContent = state.bpm+' BPM';
   $('lat').value = state.lat; $('latOut').textContent = state.lat+' ms';
-  $('click').checked = state.click; $('strum').checked = state.strum; $('loop').checked = state.loop; $('wait').checked = state.wait; $('chk').checked = state.chk;
+  $('click').checked = state.click; $('strum').checked = state.strum; $('loop').checked = state.loop; $('wait').checked = state.wait; $('chk').checked = state.chk; $('need').value = String(state.need||1);
   const hasOrig = !!sg.orig;
   document.querySelectorAll('[data-mode]').forEach(b=>{
     b.setAttribute('aria-pressed', String(b.dataset.mode === (origActive()?'orig':'learn')));
@@ -767,6 +773,7 @@ $('click').addEventListener('change', e=>{ state.click=e.target.checked; save();
 $('strum').addEventListener('change', e=>{ state.strum=e.target.checked; save(); });
 $('loop').addEventListener('change', e=>{ state.loop=e.target.checked; save(); });
 $('wait').addEventListener('change', e=>{ if(playing) stop(); state.wait=e.target.checked; save(); });
+$('need').addEventListener('change', e=>{ state.need=+e.target.value; okCount=0; save(); });
 $('chk').addEventListener('change', e=>{ state.chk=e.target.checked; save(); });
 $('calib').addEventListener('click', ()=> calibrating ? endCalib(false) : startCalib());
 document.querySelectorAll('[data-alt]').forEach(b=> b.addEventListener('click', ()=>{ state.alt = b.dataset.alt==='1'; save(); if(playing) stop(); buildTimeline(); syncUI(); }));
